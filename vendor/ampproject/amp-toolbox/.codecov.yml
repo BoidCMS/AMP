@@ -1,0 +1,24 @@
+codecov:
+  token: 9ce03549-9167-4989-a3a0-4aaef39399c4
+
+coverage:
+  status:
+    # Patch-level coverage (how well is the PR tested)
+    patch:
+      default:
+        threshold: 80%
+
+    # Project-level coverage
+    project:
+      default:
+        target: auto
+        threshold: 0.1%
+
+# See https://docs.codecov.io/docs/ignoring-paths
+ignore:
+  - "/bin"
+
+comment: false
+
+github_checks:
+  annotations: false
