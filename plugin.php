@@ -14,7 +14,7 @@ global $App;
 $App->set_action( 'install', 'amp_install' );
 $App->set_action( 'uninstall', 'amp_uninstall' );
 $App->set_action( 'site_head', 'amp_rel_amphtml' );
-$App->set_action( [ 'update_success', 'delete_success' ], 'amp_delete_cache' );
+$App->set_action( [ 'update_success', 'delete_success' ], 'delete_amp_cache' );
 $App->set_action( 'amp:pre_build', 'amp_optimize' );
 $App->set_action( 'rendered', 'amp_rendered' );
 $App->set_action( 'render', 'amp_render' );
@@ -56,18 +56,17 @@ function amp_uninstall( string $plugin ): void {
  * @return ?string
  */
 function amp_rel_amphtml( ?string $slug = null ): ?string {
-  if ( amp_excluded() ) {
-    return null;
-  }
-  
   global $App;
-  $config = $App->get( 'amp' );
+  if ( ! $App->page( 'pub' ) ||
+         amp_excluded()
+     ) return null;
+  
+  $structure = '?amp';
   $link = $App->url( $slug ?? $App->page );
   if ( str_contains( $link, '?' ) ) {
     $structure = '&amp';
   }
   
-  $structure ??= '?amp';
   $format = '<link rel="amphtml" href="%s%s">';
   return sprintf( $format, $link, $structure );
 }
@@ -121,13 +120,14 @@ function amp_optimize( string $buffer, string $slug ): string {
     return $optimized;
   }
   
-  $error_msg = 'AMP Optimizer Error(s) for Page "' . $slug . '": ' . PHP_EOL;
+  $error_msg = '';
   foreach ( $errorCollection as $error ) {
-    $error_msg .= ( $error->getCode() . ': ' . $error->getMessage() . PHP_EOL );
+    $error_msg .= ( '~~~' . date( DATE_RSS ) . PHP_EOL . $error->getCode() . PHP_EOL . $error->getMessage() . '~~~' . PHP_EOL );
   }
   
   global $App;
-  $App->log( $error_msg );
+  $file = $App->root( 'data/ampcache/@log_' . md5( $slug ) );
+  file_put_contents( $file, $error_msg, FILE_APPEND | LOCK_EX );
   return $optimized;
 }
 
@@ -139,48 +139,50 @@ function amp_admin(): void {
   global $App, $layout, $page;
   switch ( $page ) {
     case 'amp':
-    $config = $App->get( 'amp' );
-    $layout[ 'title' ] = 'AMP';
-    $layout[ 'content' ] = '
-    <form action="' . $App->admin_url( '?page=amp', true ) . '" method="post">
-      <label for="template" class="ss-label">Template</label>
-      <select id="template" name="template" class="ss-select ss-mobile ss-w-6 ss-auto">';
-    foreach ( amp_templates() as $template ) {
-      $layout[ 'content' ] .= '<option value="' . $template . '">' . ucwords( str_replace( [ '-', '_' ], ' ', $template ) ) . '</option>';
-    }
-    $layout[ 'content' ] .= '
-      </select>
-      <label for="exclude" class="ss-label">Exclude Pages</label>
-      <select id="exclude" name="exclude[]" class="ss-select ss-mobile ss-w-6 ss-auto" multiple>';
-    foreach ( $App->data()[ 'pages' ] as $slug => $post ) {
-      if ( $post[ 'pub' ] ) {
-        $exclude = in_array( $slug, $config[ 'exclude' ] );
-        $layout[ 'content' ] .= '<option value="' . $slug . '"' . ( $exclude ? ' selected' : '' ) . '>' . $post[ 'title' ] . ' "' . $slug . '"</option>';
+      $config = $App->get( 'amp' );
+      $layout[ 'title' ] = 'AMP';
+      $layout[ 'content' ] = '
+      <form action="' . $App->admin_url( '?page=amp', true ) . '" method="post">
+        <label for="template" class="ss-label">Template</label>
+        <select id="template" name="template" class="ss-select ss-mobile ss-w-6 ss-auto">';
+      foreach ( amp_templates() as $template ) {
+        $layout[ 'content' ] .= '<option value="' . $template . '">' . ucwords( str_replace( [ '-', '_' ], ' ', $template ) ) . '</option>';
       }
-    }
-    $layout[ 'content' ] .= '
-      </select>
-      <p class="ss-small ss-mb-5">This option allows you to disable AMP on selected pages.</p>
-      <input type="hidden" name="token" value="' . $App->token() . '">
-      <input type="submit" name="save" value="Save" class="ss-btn ss-mobile ss-w-5">
-    </form>';
-    if ( isset( $_POST[ 'save' ] ) ) {
-      $App->auth();
-      $config[ 'exclude' ] = ( $_POST[ 'exclude' ] ?? array() );
-      $template_changed = ( ( $_POST[ 'template' ] ?? '' ) !== $config[ 'template' ] );
-      $config[ 'template' ] = ( $_POST[ 'template' ] ?? $config[ 'template' ] );
-      if ( $App->set( $config, 'amp' ) ) {
-        if ( $template_changed ) {
-          amp_wipe_all_cache( false );
+      $layout[ 'content' ] .= '
+        </select>
+        <label for="exclude" class="ss-label">Exclude Pages</label>
+        <select id="exclude" name="exclude[]" class="ss-select ss-mobile ss-w-6 ss-auto" multiple>';
+      foreach ( $App->data()[ 'pages' ] as $slug => $post ) {
+        if ( $post[ 'pub' ] ) {
+          $exclude = in_array( $slug, $config[ 'exclude' ] );
+          $layout[ 'content' ] .= '<option value="' . $slug . '"' . ( $exclude ? ' selected' : '' ) . '>' . $post[ 'title' ] . ' "' . $slug . '"</option>';
         }
-        $App->alert( 'Settings saved successfully.', 'success' );
+      }
+      $layout[ 'content' ] .= '
+        </select>
+        <input type="hidden" name="token" value="' . $App->token() . '">
+        <input type="submit" name="save" value="Save" class="ss-btn ss-mobile ss-w-5">
+      </form>';
+      if ( isset( $_POST[ 'save' ] ) ) {
+        $App->auth();
+        $config[ 'exclude' ] = ( $_POST[ 'exclude' ] ?? array() );
+        $template_changed = ( ( $_POST[ 'template' ] ?? '' ) !== $config[ 'template' ] );
+        $config[ 'template' ] = ( $_POST[ 'template' ] ?? $config[ 'template' ] );
+        if ( $App->set( $config, 'amp' ) ) {
+          if ( $template_changed ) {
+            amp_wipe_all_cache( false );
+          }
+          
+          $App->alert( 'Settings saved successfully.', 'success' );
+          $App->go( $App->admin_url( '?page=amp' ) );
+        }
+        
+        $App->alert( 'Failed to save settings, please try again.', 'error' );
         $App->go( $App->admin_url( '?page=amp' ) );
       }
-      $App->alert( 'Failed to save settings, please try again.', 'error' );
-      $App->go( $App->admin_url( '?page=amp' ) );
-    }
-    require_once $App->root( 'app/layout.php' );
-    break;
+      
+      require_once $App->root( 'app/layout.php' );
+      break;
   }
 }
 
@@ -250,19 +252,24 @@ function amp_cache_file( ?string $slug = null ): string {
  * @param string $slug
  * @return bool
  */
-function amp_delete_cache( string $slug ): bool {
-  return unlink( amp_cache_file( $slug ) );
+function delete_amp_cache( string $slug ): bool {
+  $file = amp_cache_file( $slug );
+  if ( is_file( $file ) ) {
+    return unlink( $file );
+  }
+  
+  return false;
 }
 
 /**
- * Delete all AMP pages cache
+ * Delete all files from cache dir
  * @param bool $whole
  * @return void
  */
 function amp_wipe_all_cache( bool $whole = true ): void {
   global $App;
   $dir = $App->root( 'data/ampcache/' );
-  foreach ( glob( $dir . '*' ) as $file ) {
+  foreach ( glob( $dir . '*', GLOB_NOSORT ) as $file ) {
     unlink( $file );
   }
   
@@ -297,28 +304,6 @@ function amp_templates( bool $system = false ): array {
 }
 
 /**
- * Get AMP and components
- * @param ?string $content
- * @return array
- */
-function ampify( ?string $content ): array {
-  return [
-    ( $content = amp_convert( $content ) ),
-      amp_content_components( $content )
-  ];
-}
-
-/**
- * Apply converters to content
- * @param ?string $content
- * @return string
- */
-function amp_convert( ?string $content ): string {
-  if ( empty( $content ) )  return '';
-  return amp_convert_tags( $content );
-}
-
-/**
  * AMP template file
  * @param ?string $type
  * @return string
@@ -334,54 +319,67 @@ function amp_template( ?string $type = null ): string {
   $template = $App->get( 'amp' )[ 'template' ];
   $template = ( __DIR__ . '/templates/' . $template );
   $file = ( $template . '/' . $type . '.php' );
-  if ( is_file( $file ) ) {
-    return $file;
+  if ( is_file( $file ) ) return $file;
+  return ( $template . '/theme.php' );
+}
+
+/**
+ * Alias of amp_convert_tags
+ * @param ?string $content
+ * @return array
+ */
+function ampify( ?string $content = null ): array {
+  global $App;
+  $content ??= $App->page( 'content' );
+  if ( empty( trim( $content ?? '' ) ) ) {
+    return [ 0 => '', 1 => '' ];
   }
   
-  return ( $template . '/single.php' );
+  $content = [ 0 => $content, 1 => '' ];
+  return   amp_convert_tags( $content );
 }
 
 /**
  * Apply converters to content
- * @param string $content
- * @return string
+ * @param array $content
+ * @return array
  */
-function amp_convert_tags( string $content ): string {
-  $content = amp_convert_img_tags( $content );
-  $content = amp_convert_audio_tags( $content );
-  $content = amp_convert_video_tags( $content );
+function amp_convert_tags( array $content ): array {
+  $content = amp_convert_img_tags(    $content );
+  $content = amp_convert_audio_tags(  $content );
+  $content = amp_convert_video_tags(  $content );
   $content = amp_convert_iframe_tags( $content );
-  $content = amp_convert_form_tags( $content );
-  $content = amp_custom_converters( $content );
-  return amp_strip_tags( $content );
+  $content = amp_convert_form_tags(   $content );
+  $content = amp_custom_converters(   $content );
+  return     amp_strip_tags(          $content );
 }
 
 /**
  * Convert image tags
- * @param string $content
- * @return string
+ * @param array $content
+ * @return array
  */
-function amp_convert_img_tags( string $content ): string {
+function amp_convert_img_tags( array $content ): array {
   // Required attributes
   $atts[  'alt'   ] = '';
-  $atts[ 'height' ] = '900';
-  $atts[ 'width'  ] = '1600';
+  $atts[ 'height' ] = '720';
+  $atts[ 'width'  ] = '1280';
   $atts[ 'layout' ] = 'responsive';
   
   // Convert non-amp tags
   $regexp = '|\<img\b([\s\S]*?)\>|i';
-  preg_match_all( $regexp, $content, $matches, PREG_SET_ORDER );
+  preg_match_all( $regexp, $content[0], $matches, PREG_SET_ORDER );
   foreach ( $matches as $match ) {
     $the_atts = amp_element_atts( $match[1], $atts, $all );
     $amp = '<amp-img' . $the_atts . '>' . amp_fallback_image() . '</amp-img>';
     if ( ! isset( $all[ 'src' ] ) || empty( $all[ 'src' ] ) ) $amp = '';
-    $content = str_replace( $match[0], $amp, $content );
+    $content[0] = str_replace( $match[0], $amp, $content[0] );
   }
   
   // Fix tags inside noscript tag
   $ban_atts = [ 'layout' ];
   $regexp = '|\<noscript\b([\s\S]*?)\>([\s\S]*?)\</noscript\>|i';
-  preg_match_all( $regexp, $content, $matches, PREG_SET_ORDER );
+  preg_match_all( $regexp, $content[0], $matches, PREG_SET_ORDER );
   foreach ( $matches as $match ) {
     $fix = $match[0];
     if ( str_contains( $match[2], '<amp-img' ) ) {
@@ -393,7 +391,7 @@ function amp_convert_img_tags( string $content ): string {
       }
     }
     
-    $content = str_replace( $match[0], $fix, $content );
+    $content[0] = str_replace( $match[0], $fix, $content[0] );
   }
   
   return $content;
@@ -401,22 +399,44 @@ function amp_convert_img_tags( string $content ): string {
 
 /**
  * Convert audio tags
- * @param string $content
- * @return string
+ * @param array $content
+ * @return array
  */
-function amp_convert_audio_tags( string $content ): string {
+function amp_convert_audio_tags( array $content ): array {
   // Required attributes
   $atts[ 'height' ] = '50';
   $atts[ 'width'  ] = 'auto';
   
   // Convert non-amp tags
   $regexp = '|\<audio\b([\s\S]*?)\>([\s\S]*?)\</audio\>|i';
-  preg_match_all( $regexp, $content, $matches, PREG_SET_ORDER );
+  preg_match_all( $regexp, $content[0], $matches, PREG_SET_ORDER );
   foreach ( $matches as $match ) {
     $the_atts = amp_element_atts( $match[1], $atts, $all );
-    $amp = '<amp-audio' . $the_atts . '>' . amp_convert( $match[2] ) . amp_fallback_text( 'audio' ) . '</amp-audio>';
+    $amp = '<amp-audio' . $the_atts . '>' . ampify( $match[2] )[0] . amp_fallback_text( 'audio' ) . '</amp-audio>';
     if ( ! isset( $all[ 'src' ] ) || empty( $all[ 'src' ] ) ) $amp = '';
-    $content = str_replace( $match[0], $amp, $content );
+    $content[0] = str_replace( $match[0], $amp, $content[0] );
+  }
+  
+  // Fix tags inside noscript tag
+  $regexp = '|\<noscript\b([\s\S]*?)\>([\s\S]*?)\</noscript\>|i';
+  preg_match_all( $regexp, $content[0], $matches, PREG_SET_ORDER );
+  foreach ( $matches as $match ) {
+    $fix = $match[0];
+    if ( str_contains( $match[2], '<amp-audio' ) ) {
+      $regexp = '|\<amp\-audio\b([\s\S]*?)\>([\s\S]*?)\</amp\-audio\>|i';
+      preg_match_all( $regexp, $match[2], $mchs, PREG_SET_ORDER );
+      foreach ( $mchs as $mch ) {
+        $non_amp = '<audio' . amp_element_atts( $mch[1] ) . '>' . str_replace( [ '<noscript>', '</noscript>' ], '', ampify( '<noscript>' . $mch[2] . '</noscript>' )[0] ) . '</audio>';
+        $fix = str_replace( $mch[0], $non_amp, $fix );
+      }
+    }
+    
+    $content[0] = str_replace( $match[0], $fix, $content[0] );
+  }
+  
+  if ( str_contains( $content[0], '<amp-audio' ) ) {
+    // Required extension script
+    $content[1] .= '<script async src="https://cdn.ampproject.org/v0/amp-audio-0.1.js" custom-element="amp-audio"></script>';
   }
   
   return $content;
@@ -424,10 +444,10 @@ function amp_convert_audio_tags( string $content ): string {
 
 /**
  * Convert video tags
- * @param string $content
- * @return string
+ * @param array $content
+ * @return array
  */
-function amp_convert_video_tags( string $content ): string {
+function amp_convert_video_tags( array $content ): array {
   // Required attributes
   $atts[ 'height' ] = '360';
   $atts[ 'width'  ] = '640';
@@ -436,11 +456,34 @@ function amp_convert_video_tags( string $content ): string {
   
   // Convert non-amp tags
   $regexp = '|\<video\b([\s\S]*?)\>([\s\S]*?)\</video\>|i';
-  preg_match_all( $regexp, $content, $matches, PREG_SET_ORDER );
+  preg_match_all( $regexp, $content[0], $matches, PREG_SET_ORDER );
   foreach ( $matches as $match ) {
     $the_atts = amp_element_atts( $match[1], $atts, $all );
-    $amp = '<amp-video' . $the_atts . '>' . amp_convert( $match[2] ) . amp_fallback_text( 'video' ) . '</amp-video>';
-    $content = str_replace( $match[0], $amp, $content );
+    $amp = '<amp-video' . $the_atts . '>' . ampify( $match[2] )[0] . amp_fallback_text( 'video' ) . '</amp-video>';
+    $content[0] = str_replace( $match[0], $amp, $content[0] );
+  }
+  
+  // Fix tags inside noscript tag
+  $ban_atts = [ 'layout', 'poster' ];
+  $regexp = '|\<noscript\b([\s\S]*?)\>([\s\S]*?)\</noscript\>|i';
+  preg_match_all( $regexp, $content[0], $matches, PREG_SET_ORDER );
+  foreach ( $matches as $match ) {
+    $fix = $match[0];
+    if ( str_contains( $match[2], '<amp-video' ) ) {
+      $regexp = '|\<amp\-video\b([\s\S]*?)\>([\s\S]*?)\</amp\-video\>|i';
+      preg_match_all( $regexp, $match[2], $mchs, PREG_SET_ORDER );
+      foreach ( $mchs as $mch ) {
+        $non_amp = '<video' . amp_element_atts( $mch[1], ban_atts: $ban_atts ) . '>' . str_replace( [ '<noscript>', '</noscript>' ], '', ampify( '<noscript>' . $mch[2] . '</noscript>' )[0] ) . '</video>';
+        $fix = str_replace( $mch[0], $non_amp, $fix );
+      }
+    }
+    
+    $content[0] = str_replace( $match[0], $fix, $content[0] );
+  }
+  
+  if ( str_contains( $content[0], '<amp-video' ) ) {
+    // Required extension script
+    $content[1] .= '<script async src="https://cdn.ampproject.org/v0/amp-video-0.1.js" custom-element="amp-video"></script>';
   }
   
   return $content;
@@ -448,10 +491,10 @@ function amp_convert_video_tags( string $content ): string {
 
 /**
  * Convert iframe tags
- * @param string $content
- * @return string
+ * @param array $content
+ * @return array
  */
-function amp_convert_iframe_tags( string $content ): string {
+function amp_convert_iframe_tags( array $content ): array {
   // Required attributes
   $atts[ 'height' ] = '300';
   $atts[ 'width'  ] = '300';
@@ -460,12 +503,35 @@ function amp_convert_iframe_tags( string $content ): string {
   
   // Convert non-amp tags
   $regexp = '|\<iframe\b([\s\S]*?)\>([\s\S]*?)\</iframe\>|i';
-  preg_match_all( $regexp, $content, $matches, PREG_SET_ORDER );
+  preg_match_all( $regexp, $content[0], $matches, PREG_SET_ORDER );
   foreach ( $matches as $match ) {
     $the_atts = amp_element_atts( $match[1], $atts, $all );
-    $amp = '<amp-iframe' . $the_atts . '>' . amp_convert( $match[2] ) . amp_placeholder_image() . '</amp-iframe>';
+    $amp = '<amp-iframe' . $the_atts . '>' . ampify( $match[2] )[0] . amp_placeholder_image() . '</amp-iframe>';
     if ( ! isset( $all[ 'src' ] ) || empty( $all[ 'src' ] ) ) $amp = '';
-    $content = str_replace( $match[0], $amp, $content );
+    $content[0] = str_replace( $match[0], $amp, $content[0] );
+  }
+  
+  // Fix tags inside noscript tag
+  $ban_atts = [ 'layout', 'sandbox' ];
+  $regexp = '|\<noscript\b([\s\S]*?)\>([\s\S]*?)\</noscript\>|i';
+  preg_match_all( $regexp, $content[0], $matches, PREG_SET_ORDER );
+  foreach ( $matches as $match ) {
+    $fix = $match[0];
+    if ( str_contains( $match[2], '<amp-iframe' ) ) {
+      $regexp = '|\<amp\-iframe\b([\s\S]*?)\>([\s\S]*?)\</amp\-iframe\>|i';
+      preg_match_all( $regexp, $match[2], $mchs, PREG_SET_ORDER );
+      foreach ( $mchs as $mch ) {
+        $non_amp = '<iframe' . amp_element_atts( $mch[1], ban_atts: $ban_atts ) . '>' . str_replace( [ '<noscript>', '</noscript>' ], '', ampify( '<noscript>' . $mch[2] . '</noscript>' )[0] ) . '</iframe>';
+        $fix = str_replace( $mch[0], $non_amp, $fix );
+      }
+    }
+    
+    $content[0] = str_replace( $match[0], $fix, $content[0] );
+  }
+  
+  if ( str_contains( $content[0], '<amp-iframe' ) ) {
+    // Required extension script
+    $content[1] .= '<script async src="https://cdn.ampproject.org/v0/amp-iframe-0.1.js" custom-element="amp-iframe"></script>';
   }
   
   return $content;
@@ -473,31 +539,36 @@ function amp_convert_iframe_tags( string $content ): string {
 
 /**
  * Convert form tags
- * @param string $content
- * @return string
+ * @param array $content
+ * @return array
  */
-function amp_convert_form_tags( string $content ): string {
+function amp_convert_form_tags( array $content ): array {
   // Required attributes
   $atts[ 'method' ] = 'get';
   $atts[ 'target' ] = '_top';
   
   // Convert non-amp compatible tags
   $regexp = '|\<form\b([\s\S]*?)\>([\s\S]*?)\</form\>|i';
-  preg_match_all( $regexp, $content, $matches, PREG_SET_ORDER );
+  preg_match_all( $regexp, $content[0], $matches, PREG_SET_ORDER );
   foreach ( $matches as $match ) {
     $the_atts = amp_element_atts( $match[1], $atts, $all );
     if ( 'get' === $all[ 'method' ] ) {
       if ( ! isset( $all[ 'action' ] ) || empty( $all[ 'action' ] ) ) {
         $amp = '';
       } else {
-        $amp = '<form' . $the_atts . '>' . amp_convert( $match[2] ) . '</form>';
+        $amp = '<form' . $the_atts . '>' . ampify( $match[2] )[0] . '</form>';
       }
     } else {
-      $amp = '<form' . $the_atts . '>' . amp_convert( $match[2] ) . '</form>';
+      $amp = '<form' . $the_atts . '>' . ampify( $match[2] )[0] . '</form>';
       if ( ! isset( $all[ 'action-xhr' ] ) || empty( $all[ 'src' ] ) ) $amp = '';
     }
     
-    $content = str_replace( $match[0], $amp, $content );
+    $content[0] = str_replace( $match[0], $amp, $content[0] );
+  }
+  
+  if ( str_contains( $content[0], '<form' ) ) {
+    // Required extension script
+    $content[1] .= '<script async src="https://cdn.ampproject.org/v0/amp-form-0.1.js" custom-element="amp-form"></script>';
   }
   
   return $content;
@@ -505,84 +576,85 @@ function amp_convert_form_tags( string $content ): string {
 
 /**
  * Apply custom converters
- * @param string $content
- * @return string
+ * @param array $content
+ * @return array
  */
-function amp_custom_converters( string $content ): string {
+function amp_custom_converters( array $content ): array {
   global $App;
   return $App->get_filter( $content, 'amp:convert' );
 }
 
 /**
  * Strip illegal tags
- * @param string $content
- * @return string
+ * @param array $content
+ * @return array
  */
-function amp_strip_tags( string $content ): string {
+function amp_strip_tags( array $content ): array {
   // Remove "base" tags
   $regexp = '|\<base\b([\s\S]*?)\>|i';
-  preg_match_all( $regexp, $content, $matches, PREG_SET_ORDER );
+  preg_match_all( $regexp, $content[0], $matches, PREG_SET_ORDER );
   foreach ( $matches as $match ) {
-    $content = str_replace( $match[0], '', $content );
+    $content[0] = str_replace( $match[0], '', $content[0] );
   }
   
   // Remove "frame" & "frameset" tags
   $regexp = '|\<(?<tag>frame(set)?)\b([\s\S]*?)\>(([\s\S]*?)\<\/(?P=tag)\>)?|i';
-  preg_match_all( $regexp, $content, $matches, PREG_SET_ORDER );
+  preg_match_all( $regexp, $content[0], $matches, PREG_SET_ORDER );
   foreach ( $matches as $match ) {
-    $content = str_replace( $match[0], '', $content );
+    $content[0] = str_replace( $match[0], '', $content[0] );
   }
   
   // Remove "object" tags
   $regexp = '|\<object\b([\s\S]*?)\>([\s\S]*?)\<\/object\>|i';
-  preg_match_all( $regexp, $content, $matches, PREG_SET_ORDER );
+  preg_match_all( $regexp, $content[0], $matches, PREG_SET_ORDER );
   foreach ( $matches as $match ) {
-    $content = str_replace( $match[0], '', $content );
+    $content[0] = str_replace( $match[0], '', $content[0] );
   }
   
   // Remove "param" tags
   $regexp = '|\<param\b([\s\S]*?)\>|i';
-  preg_match_all( $regexp, $content, $matches, PREG_SET_ORDER );
+  preg_match_all( $regexp, $content[0], $matches, PREG_SET_ORDER );
   foreach ( $matches as $match ) {
-    $content = str_replace( $match[0], '', $content );
+    $content[0] = str_replace( $match[0], '', $content[0] );
   }
   
   // Remove "applet" tags
   $regexp = '|\<applet\b([\s\S]*?)\>([\s\S]*?)\<\/applet\>|i';
-  preg_match_all( $regexp, $content, $matches, PREG_SET_ORDER );
+  preg_match_all( $regexp, $content[0], $matches, PREG_SET_ORDER );
   foreach ( $matches as $match ) {
-    $content = str_replace( $match[0], '', $content );
+    $content[0] = str_replace( $match[0], '', $content[0] );
   }
   
   // Remove "embed" tags
   $regexp = '|\<embed\b([\s\S]*?)\>|i';
-  preg_match_all( $regexp, $content, $matches, PREG_SET_ORDER );
+  preg_match_all( $regexp, $content[0], $matches, PREG_SET_ORDER );
   foreach ( $matches as $match ) {
-    $content = str_replace( $match[0], '', $content );
+    $content[0] = str_replace( $match[0], '', $content[0] );
   }
   
   // Remove "style" tags
   $regexp = '|\<style\b([\s\S]*?)\>([\s\S]*?)\<\/style\>|i';
-  preg_match_all( $regexp, $content, $matches, PREG_SET_ORDER );
+  preg_match_all( $regexp, $content[0], $matches, PREG_SET_ORDER );
   foreach ( $matches as $match ) {
-    $content = str_replace( $match[0], '', $content );
+    $content[0] = str_replace( $match[0], '', $content[0] );
   }
   
   // Remove "script" tags
   $regexp = '|\<script\b([\s\S]*?)\>([\s\S]*?)\<\/script\>|i';
-  preg_match_all( $regexp, $content, $matches, PREG_SET_ORDER );
+  preg_match_all( $regexp, $content[0], $matches, PREG_SET_ORDER );
   foreach ( $matches as $match ) {
-    $content = str_replace( $match[0], '', $content );
+    $content[0] = str_replace( $match[0], '', $content[0] );
   }
   
-  // Remove comments tags
+  // Remove comments
   $regexp = '|\<\!\-\-[\s\S]*?\-\-\>|';
-  preg_match_all( $regexp, $content, $matches, PREG_SET_ORDER );
+  preg_match_all( $regexp, $content[0], $matches, PREG_SET_ORDER );
   foreach ( $matches as $match ) {
-    $content = str_replace( $match[0], '', $content );
+    $content[0] = str_replace( $match[0], '', $content[0] );
   }
   
-  return trim( $content );
+  $content[0] = trim( $content[0] );
+  return $content;
 }
 
 /**
@@ -602,9 +674,8 @@ function amp_element_atts( string $element, array $atts = [], ?array &$all_atts 
       continue;
     }
     
-    $quot = '"';
-    if ( str_contains( $value, '"' ) ) $quot = "'";
-    $str .= sprintf( ' %s=%3$s%s%3$s', $index, $value, $quot );
+    $value = htmlspecialchars( $value, ENT_QUOTES | ENT_HTML5, 'UTF-8', false );
+    $str .= sprintf( ' %s=%3$s%s%3$s', $index, $value, '"' );
   }
   
   $all_atts = $atts;
@@ -675,64 +746,5 @@ function amp_fallback_image(): string {
  */
 function amp_fallback_text( string $tag ): string {
   return '<div fallback hidden>This browser does not support the ' . amp_escape( $tag ) . ' element.</div>';
-}
-
-/**
- * Content components
- * @param string $content
- * @return string
- */
-function amp_content_components( string $content ): string {
-  $list = '';
-  $all = amp_components();
-  $format = '<script async src="%s" custom-element="%s"></script>';
-  foreach ( $all as $component => $data ) {
-    if ( preg_match( $data[ 'regex' ], $content ) ) {
-      $list .= sprintf( $format, ...array_values( $data ) ) . PHP_EOL;
-    }
-  }
-  
-  return $list;
-}
-
-/**
- * Custom components script
- * @return array
- */
-function amp_components(): array {
-  global $App;
-  $comp = array();
-  
-  // Audio component
-  $comp[ 'amp-audio' ] = array();
-  $comp[ 'amp-audio' ][ 'link' ] = 'https://cdn.ampproject.org/v0/amp-audio-0.1.js';
-  $comp[ 'amp-audio' ][ 'name' ] = 'amp-audio';
-  $comp[ 'amp-audio' ][ 'regex' ] = '|\<amp\-audio|i';
-  
-  // Form component
-  $comp[ 'amp-form' ] = array();
-  $comp[ 'amp-form' ][ 'link' ] = 'https://cdn.ampproject.org/v0/amp-form-0.1.js';
-  $comp[ 'amp-form' ][ 'name' ] = 'amp-form';
-  $comp[ 'amp-form' ][ 'regex' ] = '|\<form|i';
-  
-  // Iframe component
-  $comp[ 'amp-iframe' ] = array();
-  $comp[ 'amp-iframe' ][ 'link' ] = 'https://cdn.ampproject.org/v0/amp-iframe-0.1.js';
-  $comp[ 'amp-iframe' ][ 'name' ] = 'amp-iframe';
-  $comp[ 'amp-iframe' ][ 'regex' ] = '|\<amp\-iframe|i';
-  
-  // Video component
-  $comp[ 'amp-video' ] = array();
-  $comp[ 'amp-video' ][ 'link' ] = 'https://cdn.ampproject.org/v0/amp-video-0.1.js';
-  $comp[ 'amp-video' ][ 'name' ] = 'amp-video';
-  $comp[ 'amp-video' ][ 'regex' ] = '|\<amp\-video|i';
-  
-  // Mustache component
-  $comp[ 'amp-mustache' ] = array();
-  $comp[ 'amp-mustache' ][ 'link' ] = 'https://cdn.ampproject.org/v0/amp-mustache-0.2.js';
-  $comp[ 'amp-mustache' ][ 'name' ] = 'amp-mustache';
-  $comp[ 'amp-mustache' ][ 'regex' ] = '|type=amp\-mustache|i';
-  
-  return $App->get_filter( $comp, 'amp:components' );
 }
 ?>
